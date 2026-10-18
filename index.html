@@ -4,6 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Throne 3D">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
 <title>Stereo cut-out in a skybox</title>
 <style>
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font: 13px/1.35 system-ui, sans-serif; color: #eee; touch-action: none; }
@@ -382,7 +388,16 @@ for (const k of BOOL) $(k).addEventListener('change', e => {
 });
 $('mode').onchange = e => { S.mode = e.target.value; save(); syncUI(); onResize(); };
 envSel.onchange = e => { S.env = +e.target.value; save(); loadEnv(ENVS[S.env].url); };
-$('fs').onclick = () => document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.();
+const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+$('fs').onclick = () => {
+  const de = document.documentElement;
+  if (document.fullscreenElement || document.webkitFullscreenElement) return (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  const req = de.requestFullscreen || de.webkitRequestFullscreen;
+  if (req && !/iPhone|iPod/.test(navigator.userAgent)) return req.call(de);
+  // iPhone Safari has no page fullscreen: the home-screen app is the way to lose the browser bars
+  msg(standalone ? 'Already fullscreen (home-screen app)' : 'iPhone: tap Share → "Add to Home Screen", then open it from the home screen for true fullscreen');
+  setTimeout(() => msg(''), 6000);
+};
 $('reset').onclick = () => { yaw = pitch = 0; rig.position.set(0, 0, 0); gyroOn = false; $('gyro').textContent = 'Gyro look'; };
 const nudgeGap = d => { S.gap = THREE.MathUtils.clamp(d === 0 ? 0 : S.gap + d, -300, 300); syncUI(); save(); };
 $('gapMinus').onclick = () => nudgeGap(-4); $('gapPlus').onclick = () => nudgeGap(4); $('gapZero').onclick = () => nudgeGap(0);
