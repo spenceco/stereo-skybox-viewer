@@ -70,8 +70,16 @@
   <label>Feet offset (m) <input id="lift" type="range" min="-0.3" max="0.3" step="0.005"><span class="v"></span></label>
   <label>Brightness <input id="bright" type="range" min="0.4" max="1.6" step="0.01"><span class="v"></span></label>
   <label>Warmth <input id="warm" type="range" min="-1" max="1" step="0.01"><span class="v"></span></label>
+  <label>Fade bottom edge <input id="fade" type="range" min="0" max="0.4" step="0.01"><span class="v"></span></label>
   <label>Shadow <input id="shadow" type="range" min="0" max="1" step="0.01"><span class="v"></span></label>
   <label>Face camera <input id="billboard" type="checkbox"></label>
+  <hr>
+  <label>Show throne / prop <input id="prop" type="checkbox"></label>
+  <label>Prop behind her (m) <input id="propBack" type="range" min="-0.5" max="2" step="0.01"><span class="v"></span></label>
+  <label>Prop height (m) <input id="propH" type="range" min="0.3" max="4" step="0.01"><span class="v"></span></label>
+  <label>Prop sideways (m) <input id="propX" type="range" min="-1.5" max="1.5" step="0.01"><span class="v"></span></label>
+  <label>Prop up/down (m) <input id="propY" type="range" min="-1" max="1" step="0.01"><span class="v"></span></label>
+  <label>Prop brightness <input id="propBright" type="range" min="0.3" max="1.6" step="0.01"><span class="v"></span></label>
   <hr>
   <label>Eye height (m) <input id="eyeH" type="range" min="0.8" max="2.2" step="0.01"><span class="v"></span></label>
   <label>Eye separation (mm) <input id="ipd" type="range" min="0" max="120" step="1"><span class="v"></span></label>
@@ -88,7 +96,9 @@
   <div class="row">
     <label class="filebtn">Load SBS cut-out…<input id="fileSbs" type="file" accept="image/*"></label>
     <label class="filebtn">Load panorama…<input id="fileEnv" type="file" accept="image/*"></label>
+    <label class="filebtn">Load prop…<input id="fileProp" type="file" accept="image/*"></label>
   </div>
+  <label>Prop image is SBS <input id="propSbs" type="checkbox"></label>
   <label>Cut-out has alpha <input id="hasAlpha" type="checkbox"></label>
   <small>Drag to look · WASD/arrows to walk · H hides this panel. SBS cut-out = left eye | right eye, transparent PNG (or black background with "alpha" unticked). Panorama = 2:1 equirectangular.</small>
 </div>
@@ -105,19 +115,26 @@ const ENVS = [
   { name: 'Procedural sky', url: null },
   ...(window.STEREO_ENVS || []),
 ];
-if (q.get('env')) ENVS.push({ name: 'From URL', url: q.get('env') });
+const envByName = ENVS.findIndex(e => e.name.toLowerCase() === (q.get('env') || '').toLowerCase());
+if (q.get('env') && envByName < 0) ENVS.push({ name: 'From URL', url: q.get('env') });
 
 const DEFAULTS = {
   mode: 'mono', env: ENVS.length - 1, envRot: 0, skyH: 1.6, skyR: 60,
   dist: 2.4, height: 1.75, side: 0, lift: 0, bright: 1, warm: 0, shadow: 0.55, billboard: true,
   eyeH: 1.6, ipd: 64, focus: 2.4, focusLock: true, fov: 60, hasAlpha: true, swapEyes: false, alignTest: false, gap: 0,
+  fade: 0.1, prop: true, propBack: 0.25, propH: 1.45, propX: 0, propY: 0, propBright: 1, propSbs: true,
   ...(window.STEREO_DEFAULTS || {}),       // per-site overrides from config.js
 };
-const S = Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem('stereoSky') || '{}'));
+let saved = JSON.parse(localStorage.getItem('stereoSky') || '{}');
+if (q.has('reset')) {   // back to defaults, but keep the per-viewer eye calibration
+  const { gap, swapEyes, mode, ipd } = saved;
+  saved = Object.fromEntries(Object.entries({ gap, swapEyes, mode, ipd }).filter(([, v]) => v !== undefined));
+}
+const S = Object.assign({}, DEFAULTS, saved);
 if (q.get('mode')) S.mode = q.get('mode');
 if (q.has('align')) S.alignTest = true;
 if (q.has('gap')) S.gap = +q.get('gap') || 0;
-if (q.get('env')) S.env = ENVS.length - 1;
+if (q.get('env')) S.env = envByName >= 0 ? envByName : ENVS.length - 1;
 S.env = Math.min(S.env, ENVS.length - 1);
 const save = () => localStorage.setItem('stereoSky', JSON.stringify(S));
 
@@ -232,6 +249,37 @@ const shadow = new THREE.Mesh(new THREE.PlaneGeometry(1, 1),
 shadow.rotation.x = -Math.PI / 2; shadow.renderOrder = 1;
 person.add(shadow);
 
+// prop (e.g. a throne): another stereo cut-out that lives in the person's group, behind her, standing on the floor
+const propGrp = new THREE.Group();
+person.add(propGrp);
+const pMatL = matL.clone(), pMatR = matL.clone();
+const pMeshL = new THREE.Mesh(planeGeo, pMatL); pMeshL.layers.set(1); pMeshL.renderOrder = 1.5;
+const pMeshR = new THREE.Mesh(planeGeo, pMatR); pMeshR.layers.set(2); pMeshR.renderOrder = 1.5;
+const pShadow = new THREE.Mesh(shadow.geometry, shadow.material.clone());
+pShadow.rotation.x = -Math.PI / 2; pShadow.renderOrder = 1;
+propGrp.add(pMeshL, pMeshR, pShadow);
+let propImg = null, propAspect = 0.6;
+function setPropImage(img) {
+  propImg = img;
+  for (const [mat, off] of [[pMatL, 0], [pMatR, 0.5]]) {
+    mat.map?.dispose();
+    const t = new THREE.Texture(img);
+    t.colorSpace = THREE.SRGBColorSpace; t.premultiplyAlpha = true;
+    if (S.propSbs) { t.repeat.set(0.5, 1); t.offset.set(off, 0); }
+    t.anisotropy = renderer.capabilities.getMaxAnisotropy(); t.needsUpdate = true;
+    mat.map = t; mat.needsUpdate = true;
+  }
+  propAspect = (S.propSbs ? img.width / 2 : img.width) / img.height;
+  applyPerson();
+}
+function loadProp(url) {
+  if (!url) return;
+  const img = new Image(); img.crossOrigin = 'anonymous';
+  img.onload = () => setPropImage(img);
+  img.onerror = () => msg(`couldn't load prop: ${url}`);
+  img.src = url;
+}
+
 function setPersonImage(img) {
   // optionally key out a black background into alpha (for SBS images without transparency)
   let src = img;
@@ -245,6 +293,15 @@ function setPersonImage(img) {
       p[i + 3] = a * 255;
     }
     x.putImageData(d, 0, 0); src = c;
+  }
+  if (S.fade > 0) {   // soften the photo's hard bottom edge (where the original frame cut through her)
+    const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
+    const x = c.getContext('2d'); x.drawImage(src, 0, 0);
+    const g = x.createLinearGradient(0, img.height * (1 - S.fade), 0, img.height);
+    g.addColorStop(0, 'rgba(0,0,0,1)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+    x.globalCompositeOperation = 'destination-in';
+    x.fillStyle = g; x.fillRect(0, 0, img.width, img.height);   // gradient clamps to opaque above the fade
+    src = c;
   }
   for (const [mat, off] of [[matL, 0], [matR, 0.5]]) {
     mat.map?.dispose();
@@ -279,6 +336,15 @@ function applyPerson() {
   const k = S.bright, wm = S.warm * 0.12;
   const col = new THREE.Color(k * (1 + wm), k, k * (1 - wm));
   matL.color.copy(col); matR.color.copy(col);
+  // prop: feet on the real floor (undo the person's lift), set back behind her
+  propGrp.visible = S.prop && !!propImg;
+  const ph = S.propH, pw = ph * propAspect;
+  pMeshL.scale.set(pw, ph, 1); pMeshR.scale.set(pw, ph, 1);
+  propGrp.position.set(S.propX, S.propY - S.lift, -S.propBack);
+  pShadow.scale.set(pw * 1.1, pw * 0.6, 1); pShadow.position.set(0, 0.003 - S.propY, 0.05);
+  pShadow.material.opacity = S.shadow;
+  const pk = S.propBright;
+  pMatL.color.setRGB(pk * (1 + wm), pk, pk * (1 - wm)); pMatR.color.copy(pMatL.color);
   if (S.focusLock) S.focus = S.dist;
 }
 
@@ -290,8 +356,8 @@ function msg(t) { $('msg').textContent = t; }
 const envSel = $('env');
 ENVS.forEach((e, i) => envSel.add(new Option(e.name, i)));
 
-const NUM = ['envRot', 'skyH', 'skyR', 'dist', 'height', 'side', 'lift', 'bright', 'warm', 'shadow', 'eyeH', 'ipd', 'focus', 'fov', 'gap'];
-const BOOL = ['billboard', 'focusLock', 'hasAlpha', 'swapEyes', 'alignTest'];
+const NUM = ['envRot', 'skyH', 'skyR', 'dist', 'height', 'side', 'lift', 'bright', 'warm', 'shadow', 'eyeH', 'ipd', 'focus', 'fov', 'gap', 'propBack', 'propH', 'propX', 'propY', 'propBright', 'fade'];
+const BOOL = ['billboard', 'focusLock', 'hasAlpha', 'swapEyes', 'alignTest', 'prop', 'propSbs'];
 function syncUI() {
   $('mode').value = S.mode; envSel.value = S.env;
   for (const k of NUM) { $(k).value = S[k]; $(k).nextElementSibling.textContent = (+S[k]).toFixed(k === 'ipd' || k === 'gap' || k === 'fov' || k === 'envRot' || k === 'skyR' ? 0 : 2); }
@@ -305,11 +371,13 @@ for (const k of NUM) $(k).addEventListener('input', e => {
   if (k === 'focus') S.focusLock = false;
   if (k === 'envRot' && envObj && envTex) envObj.rotation.y = THREE.MathUtils.degToRad(S.envRot);
   if (k === 'skyH' || k === 'skyR') buildGroundedSky();
+  if (k === 'fade' && personImg) setPersonImage(personImg);
   if (k === 'fov') { camera.fov = S.fov; camera.updateProjectionMatrix(); }
   applyPerson(); syncUI(); save();
 });
 for (const k of BOOL) $(k).addEventListener('change', e => {
   S[k] = e.target.checked; if (k === 'hasAlpha' && personImg) setPersonImage(personImg);
+  if (k === 'propSbs' && propImg) setPropImage(propImg);
   applyPerson(); syncUI(); save();
 });
 $('mode').onchange = e => { S.mode = e.target.value; save(); syncUI(); onResize(); };
@@ -320,6 +388,7 @@ const nudgeGap = d => { S.gap = THREE.MathUtils.clamp(d === 0 ? 0 : S.gap + d, -
 $('gapMinus').onclick = () => nudgeGap(-4); $('gapPlus').onclick = () => nudgeGap(4); $('gapZero').onclick = () => nudgeGap(0);
 $('menu').onclick = () => ui.classList.toggle('hidden');
 $('fileSbs').onchange = e => { const f = e.target.files[0]; if (f) loadPerson(URL.createObjectURL(f)); };
+$('fileProp').onchange = e => { const f = e.target.files[0]; if (f) { S.prop = true; syncUI(); loadProp(URL.createObjectURL(f)); } };
 $('fileEnv').onchange = e => {
   const f = e.target.files[0]; if (!f) return;
   ENVS.push({ name: f.name, url: URL.createObjectURL(f) }); envSel.add(new Option(f.name, ENVS.length - 1));
@@ -472,6 +541,7 @@ if (S.mode !== 'mono' || q.has('hideui')) ui.classList.add('hidden');
 renderer.setAnimationLoop(render);
 loadEnv(ENVS[S.env].url).catch(() => {});
 loadPerson(q.get('sbs') || window.STEREO_SBS || 'sbs_rgba.png');
+loadProp(q.get('prop') || window.STEREO_PROP);
 window.__viewer = { S, scene, camera, renderer, applyPerson };
 </script>
 </body>
