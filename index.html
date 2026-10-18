@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Stereo cut-out in a skybox</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font: 13px/1.35 system-ui, sans-serif; color: #eee; touch-action: none; }
+  canvas { display: block; }
+  #ui { position: fixed; top: 8px; left: 8px; width: 270px; max-height: calc(100% - 16px); overflow: auto;
+        background: rgba(15,15,20,.82); border-radius: 10px; padding: 10px 12px; backdrop-filter: blur(6px); }
+  #ui.hidden { display: none; }
+  #ui h1 { font-size: 14px; margin: 0 0 6px; }
+  #ui label { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 5px 0; }
+  #ui label span.v { width: 42px; text-align: right; color: #9cf; font-variant-numeric: tabular-nums; }
+  #ui input[type=range] { flex: 1; min-width: 0; }
+  #ui select, #ui button, .filebtn { background: #2a2d36; color: #eee; border: 1px solid #444; border-radius: 6px; padding: 4px 8px; font: inherit; }
+  #ui .row { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+  #ui hr { border: 0; border-top: 1px solid #333; margin: 8px 0; }
+  #ui small { color: #999; }
+  .filebtn input { display: none; }
+  #menu { position: fixed; right: 10px; bottom: 10px; z-index: 2; width: 40px; height: 40px; border-radius: 20px; border: 0;
+          background: rgba(30,30,40,.7); color: #fff; font-size: 20px; }
+  #msg { position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%); color: #ccc; pointer-events: none; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="msg">loading…</div>
+<button id="menu" title="Menu (H)">☰</button>
+<div id="ui">
+  <h1>Stereo cut-out viewer</h1>
+  <label>View mode
+    <select id="mode">
+      <option value="mono">Mono (flat screen)</option>
+      <option value="sbs">Full SBS (XR glasses 3D mode)</option>
+      <option value="hsbs">Half SBS (squeezed)</option>
+      <option value="anaglyph">Anaglyph red/cyan</option>
+    </select>
+  </label>
+  <div class="row">
+    <button id="fs">Fullscreen</button>
+    <button id="gyro">Gyro look</button>
+    <button id="reset">Reset view</button>
+    <span id="vrslot"></span>
+  </div>
+  <hr>
+  <label>Environment <select id="env"></select></label>
+  <label>Env rotation <input id="envRot" type="range" min="0" max="360" step="1"><span class="v"></span></label>
+  <label>Pano camera height (m) <input id="skyH" type="range" min="0.5" max="6" step="0.05"><span class="v"></span></label>
+  <label>Ground radius (m) <input id="skyR" type="range" min="10" max="300" step="1"><span class="v"></span></label>
+  <hr>
+  <label>Distance (m) <input id="dist" type="range" min="0.8" max="10" step="0.05"><span class="v"></span></label>
+  <label>Image height (m) <input id="height" type="range" min="0.5" max="2.5" step="0.01"><span class="v"></span></label>
+  <label>Sideways (m) <input id="side" type="range" min="-4" max="4" step="0.05"><span class="v"></span></label>
+  <label>Feet offset (m) <input id="lift" type="range" min="-0.3" max="0.3" step="0.005"><span class="v"></span></label>
+  <label>Brightness <input id="bright" type="range" min="0.4" max="1.6" step="0.01"><span class="v"></span></label>
+  <label>Warmth <input id="warm" type="range" min="-1" max="1" step="0.01"><span class="v"></span></label>
+  <label>Shadow <input id="shadow" type="range" min="0" max="1" step="0.01"><span class="v"></span></label>
+  <label>Face camera <input id="billboard" type="checkbox"></label>
+  <hr>
+  <label>Eye height (m) <input id="eyeH" type="range" min="0.8" max="2.2" step="0.01"><span class="v"></span></label>
+  <label>Eye separation (mm) <input id="ipd" type="range" min="0" max="120" step="1"><span class="v"></span></label>
+  <label>Screen plane (m) <input id="focus" type="range" min="0.5" max="20" step="0.1"><span class="v"></span></label>
+  <label>Lock screen plane to person <input id="focusLock" type="checkbox"></label>
+  <label>Field of view <input id="fov" type="range" min="30" max="110" step="1"><span class="v"></span></label>
+  <hr>
+  <div class="row">
+    <label class="filebtn">Load SBS cut-out…<input id="fileSbs" type="file" accept="image/*"></label>
+    <label class="filebtn">Load panorama…<input id="fileEnv" type="file" accept="image/*"></label>
+  </div>
+  <label>Cut-out has alpha <input id="hasAlpha" type="checkbox"></label>
+  <small>Drag to look · WASD/arrows to walk · H hides this panel. SBS cut-out = left eye | right eye, transparent PNG (or black background with "alpha" unticked). Panorama = 2:1 equirectangular.</small>
+</div>
+
+<script src="config.js"></script>
+<script type="module">
+import * as THREE from 'three';
+import { GroundedSkybox } from 'three/addons/objects/GroundedSkybox.js';
+import { Sky } from 'three/addons/objects/Sky.js';
+import { VRButton } from 'three/addons/webxr/VRButton.js';
+
+const q = new URLSearchParams(location.search);
+const ENVS = [
+  { name: 'Procedural sky', url: null },
+  ...(window.STEREO_ENVS || []),
+];
+if (q.get('env')) ENVS.push({ name: 'From URL', url: q.get('env') });
+
+const DEFAULTS = {
+  mode: 'mono', env: ENVS.length - 1, envRot: 0, skyH: 1.6, skyR: 60,
+  dist: 2.4, height: 1.75, side: 0, lift: 0, bright: 1, warm: 0, shadow: 0.55, billboard: true,
+  eyeH: 1.6, ipd: 64, focus: 2.4, focusLock: true, fov: 60, hasAlpha: true,
+};
+const S = Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem('stereoSky') || '{}'));
+if (q.get('mode')) S.mode = q.get('mode');
+if (q.get('env')) S.env = ENVS.length - 1;
+S.env = Math.min(S.env, ENVS.length - 1);
+const save = () => localStorage.setItem('stereoSky', JSON.stringify(S));
+
+// ---------------------------------------------------------------- renderer / scene
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.xr.enabled = true;
+renderer.xr.setReferenceSpaceType('local-floor');
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const rig = new THREE.Group();                 // walk / yaw
+scene.add(rig);
+const camera = new THREE.PerspectiveCamera(S.fov, innerWidth / innerHeight, 0.05, 3000);
+rig.add(camera);
+camera.layers.enable(1);                       // mono view shows the left-eye image
+
+const stereo = new THREE.StereoCamera();
+stereo.cameraL.layers.enable(1);
+stereo.cameraR.layers.enable(2);
+
+// ---------------------------------------------------------------- environment
+let envObj = null, envTex = null;
+const texLoader = new THREE.TextureLoader();
+texLoader.setCrossOrigin('anonymous');
+
+function clearEnv() {
+  if (envObj) { scene.remove(envObj); envObj.traverse(o => { o.geometry?.dispose(); o.material?.dispose?.(); }); envObj = null; }
+  if (envTex) { envTex.dispose(); envTex = null; }
+  scene.background = null;
+}
+
+function proceduralEnv() {
+  const g = new THREE.Group();
+  const sky = new Sky();
+  sky.scale.setScalar(2000);
+  const u = sky.material.uniforms;
+  u.turbidity.value = 4; u.rayleigh.value = 1.2; u.mieCoefficient.value = 0.004; u.mieDirectionalG.value = 0.8;
+  u.sunPosition.value.setFromSphericalCoords(1, THREE.MathUtils.degToRad(78), THREE.MathUtils.degToRad(200));
+  g.add(sky);
+  // ground: soft noisy grass-stone texture drawn on a canvas, with a faint grid for scale
+  const c = document.createElement('canvas'); c.width = c.height = 512;
+  const x = c.getContext('2d');
+  x.fillStyle = '#6f7a5a'; x.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 9000; i++) {
+    const v = 90 + Math.random() * 60 | 0;
+    x.fillStyle = `rgba(${v},${v + 15},${v - 25},${Math.random() * 0.35})`;
+    x.fillRect(Math.random() * 512, Math.random() * 512, 2 + Math.random() * 4, 2 + Math.random() * 4);
+  }
+  x.strokeStyle = 'rgba(0,0,0,.12)'; x.lineWidth = 2; x.strokeRect(0, 0, 512, 512);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(200, 200);
+  t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  const ground = new THREE.Mesh(new THREE.CircleGeometry(400, 64), new THREE.MeshBasicMaterial({ map: t, color: 0xdddddd }));
+  ground.rotation.x = -Math.PI / 2;
+  g.add(ground);
+  // a few posts so there is something with depth around you
+  const postMat = new THREE.MeshLambertMaterial({ color: 0xb9ae98 });
+  for (let i = 0; i < 12; i++) {
+    const a = i / 12 * Math.PI * 2, r = 9;
+    const p = new THREE.Mesh(new THREE.BoxGeometry(0.4, 3, 0.4), postMat);
+    p.position.set(Math.sin(a) * r, 1.5, Math.cos(a) * r);
+    g.add(p);
+  }
+  g.add(new THREE.HemisphereLight(0xcfe3ff, 0x6f6a55, 2.2));
+  const sun = new THREE.DirectionalLight(0xfff1d6, 1.5); sun.position.set(-3, 8, -6); g.add(sun);
+  return g;
+}
+
+function buildGroundedSky() {
+  if (!envTex) return;
+  if (envObj) { scene.remove(envObj); envObj.geometry.dispose(); envObj.material.dispose(); }
+  envObj = new GroundedSkybox(envTex, S.skyH, S.skyR, 128);
+  envObj.position.y = S.skyH - 0.01;
+  envObj.rotation.y = THREE.MathUtils.degToRad(S.envRot);
+  scene.add(envObj);
+}
+
+function loadEnv(url) {
+  clearEnv();
+  if (!url) { envObj = proceduralEnv(); scene.add(envObj); return Promise.resolve(); }
+  return new Promise((res, rej) => texLoader.load(url, t => {
+    t.mapping = THREE.EquirectangularReflectionMapping;
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    envTex = t; buildGroundedSky(); res();
+  }, undefined, e => { msg(`couldn't load panorama: ${url}`); rej(e); }));
+}
+
+// ---------------------------------------------------------------- the stereo cut-out
+// Two planes in the same place: left-eye half lives on layer 1, right-eye half on layer 2.
+// WebXR and our StereoCamera both route layer 1 to the left eye and layer 2 to the right.
+const person = new THREE.Group();
+scene.add(person);
+const planeGeo = new THREE.PlaneGeometry(1, 1).translate(0, 0.5, 0);   // origin at the feet
+const matL = new THREE.MeshBasicMaterial({ transparent: true, premultipliedAlpha: true, depthWrite: false, side: THREE.DoubleSide });
+const matR = matL.clone();
+const meshL = new THREE.Mesh(planeGeo, matL); meshL.layers.set(1); meshL.renderOrder = 2;
+const meshR = new THREE.Mesh(planeGeo, matR); meshR.layers.set(2); meshR.renderOrder = 2;
+person.add(meshL, meshR);
+let eyeAspect = 0.56;
+
+// contact shadow: radial gradient blob under the feet
+const shC = document.createElement('canvas'); shC.width = shC.height = 128;
+{ const x = shC.getContext('2d'), gr = x.createRadialGradient(64, 64, 0, 64, 64, 64);
+  gr.addColorStop(0, 'rgba(0,0,0,1)'); gr.addColorStop(0.45, 'rgba(0,0,0,.55)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+  x.fillStyle = gr; x.fillRect(0, 0, 128, 128); }
+const shadow = new THREE.Mesh(new THREE.PlaneGeometry(1, 1),
+  new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(shC), transparent: true, depthWrite: false }));
+shadow.rotation.x = -Math.PI / 2; shadow.renderOrder = 1;
+person.add(shadow);
+
+function setPersonImage(img) {
+  // optionally key out a black background into alpha (for SBS images without transparency)
+  let src = img;
+  if (!S.hasAlpha) {
+    const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
+    const x = c.getContext('2d'); x.drawImage(img, 0, 0);
+    const d = x.getImageData(0, 0, c.width, c.height), p = d.data;
+    for (let i = 0; i < p.length; i += 4) {
+      const m = Math.max(p[i], p[i + 1], p[i + 2]);
+      const a = Math.min(1, Math.max(0, (m - 6) / 22));
+      p[i + 3] = a * 255;
+    }
+    x.putImageData(d, 0, 0); src = c;
+  }
+  for (const [mat, off] of [[matL, 0], [matR, 0.5]]) {
+    mat.map?.dispose();
+    const t = new THREE.Texture(src);
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.premultiplyAlpha = true;                 // correct edge filtering, no dark/bright halo
+    t.repeat.set(0.5, 1); t.offset.set(off, 0);
+    t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    t.needsUpdate = true;
+    mat.map = t; mat.needsUpdate = true;
+  }
+  eyeAspect = (img.width / 2) / img.height;
+  applyPerson();
+  msg('');
+}
+let personImg = null;
+function loadPerson(url) {
+  const img = new Image(); img.crossOrigin = 'anonymous';
+  img.onload = () => { personImg = img; setPersonImage(img); };
+  img.onerror = () => { msg('Open the menu and use "Load SBS cut-out…"'); ui.classList.remove('hidden'); };
+  img.src = url;
+}
+
+function applyPerson() {
+  const h = S.height, w = h * eyeAspect;
+  meshL.scale.set(w, h, 1); meshR.scale.set(w, h, 1);
+  person.position.set(S.side, S.lift, -S.dist);
+  shadow.scale.set(w * 0.9, w * 0.35, 1);
+  shadow.position.set(0, 0.004 - S.lift, 0.02);
+  shadow.material.opacity = S.shadow;
+  // brightness + warmth tint to sit the photo into the environment's light
+  const k = S.bright, wm = S.warm * 0.12;
+  const col = new THREE.Color(k * (1 + wm), k, k * (1 - wm));
+  matL.color.copy(col); matR.color.copy(col);
+  if (S.focusLock) S.focus = S.dist;
+}
+
+// ---------------------------------------------------------------- UI
+const $ = id => document.getElementById(id);
+const ui = $('ui');
+function msg(t) { $('msg').textContent = t; }
+
+const envSel = $('env');
+ENVS.forEach((e, i) => envSel.add(new Option(e.name, i)));
+
+const NUM = ['envRot', 'skyH', 'skyR', 'dist', 'height', 'side', 'lift', 'bright', 'warm', 'shadow', 'eyeH', 'ipd', 'focus', 'fov'];
+const BOOL = ['billboard', 'focusLock', 'hasAlpha'];
+function syncUI() {
+  $('mode').value = S.mode; envSel.value = S.env;
+  for (const k of NUM) { $(k).value = S[k]; $(k).nextElementSibling.textContent = (+S[k]).toFixed(k === 'ipd' || k === 'fov' || k === 'envRot' || k === 'skyR' ? 0 : 2); }
+  for (const k of BOOL) $(k).checked = S[k];
+}
+for (const k of NUM) $(k).addEventListener('input', e => {
+  S[k] = +e.target.value;
+  if (k === 'focus') S.focusLock = false;
+  if (k === 'envRot' && envObj && envTex) envObj.rotation.y = THREE.MathUtils.degToRad(S.envRot);
+  if (k === 'skyH' || k === 'skyR') buildGroundedSky();
+  if (k === 'fov') { camera.fov = S.fov; camera.updateProjectionMatrix(); }
+  applyPerson(); syncUI(); save();
+});
+for (const k of BOOL) $(k).addEventListener('change', e => {
+  S[k] = e.target.checked; if (k === 'hasAlpha' && personImg) setPersonImage(personImg);
+  applyPerson(); syncUI(); save();
+});
+$('mode').onchange = e => { S.mode = e.target.value; save(); onResize(); };
+envSel.onchange = e => { S.env = +e.target.value; save(); loadEnv(ENVS[S.env].url); };
+$('fs').onclick = () => document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.();
+$('reset').onclick = () => { yaw = pitch = 0; rig.position.set(0, 0, 0); gyroOn = false; $('gyro').textContent = 'Gyro look'; };
+$('menu').onclick = () => ui.classList.toggle('hidden');
+$('fileSbs').onchange = e => { const f = e.target.files[0]; if (f) loadPerson(URL.createObjectURL(f)); };
+$('fileEnv').onchange = e => {
+  const f = e.target.files[0]; if (!f) return;
+  ENVS.push({ name: f.name, url: URL.createObjectURL(f) }); envSel.add(new Option(f.name, ENVS.length - 1));
+  S.env = ENVS.length - 1; envSel.value = S.env; loadEnv(ENVS[S.env].url);
+};
+if ('xr' in navigator) navigator.xr.isSessionSupported('immersive-vr').then(ok => {
+  if (!ok) return;
+  const b = VRButton.createButton(renderer);
+  b.style.cssText = ''; b.textContent = 'Enter VR';
+  $('vrslot').appendChild(b);
+}).catch(() => {});
+
+// ---------------------------------------------------------------- look / walk controls
+let yaw = 0, pitch = 0, drag = null;
+const keys = {};
+renderer.domElement.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY }; renderer.domElement.setPointerCapture(e.pointerId); });
+renderer.domElement.addEventListener('pointermove', e => {
+  if (!drag || gyroOn) return;
+  const s = THREE.MathUtils.degToRad(S.fov) / innerHeight;
+  yaw += (e.clientX - drag.x) * s; pitch += (e.clientY - drag.y) * s;
+  pitch = THREE.MathUtils.clamp(pitch, -1.4, 1.4);
+  drag = { x: e.clientX, y: e.clientY };
+});
+renderer.domElement.addEventListener('pointerup', () => drag = null);
+renderer.domElement.addEventListener('wheel', e => { S.dist = THREE.MathUtils.clamp(S.dist + e.deltaY * 0.002, 0.8, 10); applyPerson(); syncUI(); save(); });
+addEventListener('keydown', e => { keys[e.code] = true; if (e.code === 'KeyH') ui.classList.toggle('hidden'); });
+addEventListener('keyup', e => keys[e.code] = false);
+
+// device-orientation look (phones / glasses that expose the gyro to the browser)
+let gyroOn = false, orient = null, screenAng = 0, gyroZero = null;
+$('gyro').onclick = async () => {
+  if (gyroOn) { gyroOn = false; $('gyro').textContent = 'Gyro look'; return; }
+  if (typeof DeviceOrientationEvent !== 'undefined' && DeviceOrientationEvent.requestPermission) {
+    if (await DeviceOrientationEvent.requestPermission() !== 'granted') return;
+  }
+  gyroOn = true; gyroZero = null; $('gyro').textContent = 'Gyro: on';
+};
+addEventListener('deviceorientation', e => { if (e.alpha != null) orient = e; });
+addEventListener('orientationchange', () => screenAng = screen.orientation?.angle ?? window.orientation ?? 0);
+screenAng = screen.orientation?.angle ?? window.orientation ?? 0;
+const zee = new THREE.Vector3(0, 0, 1), q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
+const euler = new THREE.Euler(), q0 = new THREE.Quaternion();
+function gyroQuat(out) {
+  const d = THREE.MathUtils.degToRad;
+  euler.set(d(orient.beta), d(orient.alpha), -d(orient.gamma), 'YXZ');
+  out.setFromEuler(euler).multiply(q1).multiply(q0.setFromAxisAngle(zee, -d(screenAng)));
+  return out;
+}
+
+const clock = new THREE.Clock();
+const fwd = new THREE.Vector3(), rightV = new THREE.Vector3(), camW = new THREE.Vector3(), tmpQ = new THREE.Quaternion();
+function updateControls(dt) {
+  if (renderer.xr.isPresenting) return;
+  camera.position.set(0, S.eyeH, 0);
+  if (gyroOn && orient) {
+    gyroQuat(tmpQ);
+    if (!gyroZero) {   // re-centre: whatever way you face when enabling = towards the person
+      const e = new THREE.Euler().setFromQuaternion(tmpQ, 'YXZ');
+      gyroZero = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -e.y);
+    }
+    camera.quaternion.copy(gyroZero).multiply(tmpQ);
+    rig.rotation.y = 0;
+  } else {
+    rig.rotation.y = -yaw; camera.rotation.set(-pitch, 0, 0, 'YXZ');
+  }
+  const sp = 1.6 * dt;
+  camera.getWorldDirection(fwd); fwd.y = 0; fwd.normalize();
+  rightV.crossVectors(fwd, camera.up).normalize();
+  if (keys.KeyW || keys.ArrowUp) rig.position.addScaledVector(fwd, sp);
+  if (keys.KeyS || keys.ArrowDown) rig.position.addScaledVector(fwd, -sp);
+  if (keys.KeyD || keys.ArrowRight) rig.position.addScaledVector(rightV, sp);
+  if (keys.KeyA || keys.ArrowLeft) rig.position.addScaledVector(rightV, -sp);
+}
+
+// ---------------------------------------------------------------- rendering
+const rtL = new THREE.WebGLRenderTarget(1, 1, { samples: 4, colorSpace: THREE.SRGBColorSpace });
+const rtR = rtL.clone();
+const anaScene = new THREE.Scene(), anaCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+anaScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({
+  uniforms: { tL: { value: rtL.texture }, tR: { value: rtR.texture } },
+  vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0., 1.); }',
+  // Dubois-style optimised red/cyan, cuts the worst retinal rivalry
+  fragmentShader: `uniform sampler2D tL, tR; varying vec2 vUv;
+    void main(){ vec3 l = texture2D(tL, vUv).rgb, r = texture2D(tR, vUv).rgb;
+      vec3 c = vec3(dot(l, vec3(.4561,.500484,.176381)) - dot(r, vec3(.0434706,.0879388,.00155529)),
+                    dot(r, vec3(.378476,.73364,-.0184503)) - dot(l, vec3(.0400822,.0378246,.0157589)),
+                    dot(r, vec3(-.0721527,-.112961,1.2264)) - dot(l, vec3(.0152161,.0205971,.00546856)));
+      gl_FragColor = vec4(clamp(c, 0., 1.), 1.);
+      #include <colorspace_fragment>
+    }`,
+})));
+
+function onResize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h);
+  // full SBS: each eye is a native (w/2) x h image. half SBS: each half is squeezed, display stretches it back to w x h.
+  camera.aspect = S.mode === 'sbs' ? (w / 2) / h : w / h;
+  camera.updateProjectionMatrix();
+  const pr = renderer.getPixelRatio();
+  rtL.setSize(w * pr, h * pr); rtR.setSize(w * pr, h * pr);
+}
+addEventListener('resize', onResize);
+
+function faceCamera() {
+  if (!S.billboard) { person.rotation.y = 0; return; }
+  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  cam.getWorldPosition(camW);
+  person.rotation.y = Math.atan2(camW.x - person.position.x, camW.z - person.position.z);
+}
+
+function render() {
+  const dt = Math.min(clock.getDelta(), 0.1);
+  updateControls(dt);
+  faceCamera();
+  if (renderer.xr.isPresenting || S.mode === 'mono') { renderer.render(scene, camera); return; }
+
+  camera.updateMatrixWorld();
+  camera.focus = S.focus;
+  stereo.eyeSep = S.ipd / 1000;
+  stereo.update(camera);
+  const w = innerWidth, h = innerHeight;
+  if (S.mode === 'anaglyph') {
+    renderer.setRenderTarget(rtL); renderer.render(scene, stereo.cameraL);
+    renderer.setRenderTarget(rtR); renderer.render(scene, stereo.cameraR);
+    renderer.setRenderTarget(null); renderer.render(anaScene, anaCam);
+    return;
+  }
+  renderer.setScissorTest(true);
+  renderer.setScissor(0, 0, w / 2, h); renderer.setViewport(0, 0, w / 2, h); renderer.render(scene, stereo.cameraL);
+  renderer.setScissor(w / 2, 0, w / 2, h); renderer.setViewport(w / 2, 0, w / 2, h); renderer.render(scene, stereo.cameraR);
+  renderer.setScissorTest(false); renderer.setViewport(0, 0, w, h);
+}
+
+// ---------------------------------------------------------------- go
+syncUI(); onResize();
+if (S.mode !== 'mono' || q.has('hideui')) ui.classList.add('hidden');
+renderer.setAnimationLoop(render);
+loadEnv(ENVS[S.env].url).catch(() => {});
+loadPerson(q.get('sbs') || window.STEREO_SBS || 'sbs_rgba.png');
+window.__viewer = { S, scene, camera, renderer, applyPerson };
+</script>
+</body>
+</html>
