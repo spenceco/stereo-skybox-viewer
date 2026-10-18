@@ -97,6 +97,7 @@ const DEFAULTS = {
   mode: 'mono', env: ENVS.length - 1, envRot: 0, skyH: 1.6, skyR: 60,
   dist: 2.4, height: 1.75, side: 0, lift: 0, bright: 1, warm: 0, shadow: 0.55, billboard: true,
   eyeH: 1.6, ipd: 64, focus: 2.4, focusLock: true, fov: 60, hasAlpha: true,
+  ...(window.STEREO_DEFAULTS || {}),       // per-site overrides from config.js
 };
 const S = Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem('stereoSky') || '{}'));
 if (q.get('mode')) S.mode = q.get('mode');
