@@ -35,6 +35,8 @@
   #align b::before, #align b::after { content: ''; position: absolute; background: #0f0; left: 50%; top: 50%; }
   #align b::before { width: 160px; height: 3px; transform: translate(-50%,-50%); }
   #align b::after { width: 3px; height: 160px; transform: translate(-50%,-50%); }
+  #msg2 { position: fixed; top: 50%; transform: translate(-50%,-50%); color: #ccc; pointer-events: none; display: none; }
+  body.stereo #msg { left: 25%; } body.stereo #msg2 { left: 75%; display: block; }
   #msg { position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%); color: #ccc; pointer-events: none; }
 </style>
 <script type="importmap">
@@ -45,7 +47,7 @@
 </script>
 </head>
 <body>
-<div id="msg">loading…</div>
+<div id="msg">loading…</div><div id="msg2"></div>
 <div id="align"><div><b>L</b></div><div><b>R</b></div></div>
 <button id="menu" title="Menu (H)">☰</button>
 <div id="ui">
@@ -357,7 +359,7 @@ function applyPerson() {
 // ---------------------------------------------------------------- UI
 const $ = id => document.getElementById(id);
 const ui = $('ui');
-function msg(t) { $('msg').textContent = t; }
+function msg(t) { $('msg').textContent = t; $('msg2').textContent = t; }
 
 const envSel = $('env');
 ENVS.forEach((e, i) => envSel.add(new Option(e.name, i)));
@@ -430,6 +432,7 @@ renderer.domElement.addEventListener('pointermove', e => {
 renderer.domElement.addEventListener('pointerup', () => drag = null);
 renderer.domElement.addEventListener('wheel', e => { S.dist = THREE.MathUtils.clamp(S.dist + e.deltaY * 0.002, 0.8, 10); applyPerson(); syncUI(); save(); });
 addEventListener('keydown', e => { keys[e.code] = true; if (e.code === 'KeyH') ui.classList.toggle('hidden');
+  if (e.code === 'KeyR') wantRecenter = true;
   if (e.code === 'BracketLeft') nudgeGap(-2); if (e.code === 'BracketRight') nudgeGap(2); });
 addEventListener('keyup', e => keys[e.code] = false);
 
@@ -457,10 +460,61 @@ function gyroQuat(out) {
 const clock = new THREE.Clock();
 let shiftApplied = 0;
 const fwd = new THREE.Vector3(), rightV = new THREE.Vector3(), camW = new THREE.Vector3(), tmpQ = new THREE.Quaternion();
+// ---------------------------------------------------------------- head tracking from the XR glasses driver
+// ?head=1, served by breezy-deck's throne-server: /pose streams the glasses' orientation (already in three.js axes).
+const HEAD = q.has('head');
+let pose = null, poseAt = 0, headZero = new THREE.Quaternion(), wantRecenter = true;
+const qA = new THREE.Quaternion(), qB = new THREE.Quaternion(), qD = new THREE.Quaternion(), qI = new THREE.Quaternion();
+if (HEAD) {
+  document.body.style.cursor = 'none';
+  $('menu').style.display = 'none';
+  ui.classList.add('hidden');
+  msg('Waiting for head tracking from the glasses…');
+  const es = new EventSource('/pose');
+  es.onmessage = e => {
+    const first = !pose;
+    pose = JSON.parse(e.data); poseAt = performance.now();
+    // the driver recentered (glasses double-tap): it sends exactly identity, and from then on "ahead" is where you face
+    const [x, y, z, w] = pose.q;
+    if (x === 0 && y === 0 && z === 0 && w === 1) { headZero.identity(); wantRecenter = false; }
+    if (first) { msg('Head tracking on · R recenters · H settings · Ctrl+Q exits'); setTimeout(() => msg(''), 5000); }
+    // the glasses' own 3D switch decides the view mode: full SBS on a 32:9 output, squeezed on 16:9, flat in 2D
+    const m = pose.sbs ? (innerWidth / innerHeight > 2.6 ? 'sbs' : 'hsbs') : 'mono';
+    if (m !== S.mode) { S.mode = m; onResize(); syncUI(); }
+    // true-scale view: the glasses' diagonal FOV, per eye
+    const a = pose.res[0] / pose.res[1], tanD = Math.tan(THREE.MathUtils.degToRad(pose.fov) / 2);
+    const vfov = THREE.MathUtils.radToDeg(2 * Math.atan(tanD / Math.sqrt(1 + a * a)));
+    if (pose.fov > 0 && Math.abs(camera.fov - vfov) > 0.01) { camera.fov = vfov; camera.updateProjectionMatrix(); }
+  };
+  es.onerror = () => msg('Lost head tracking (is breezy throne still running?)');
+}
+function headQuat(out) {
+  // the two latest orientations give the turn rate; predict ahead by the driver's look-ahead plus the data's age,
+  // like Breezy does, so the world doesn't lag behind fast head turns
+  qA.fromArray(pose.q); qB.fromArray(pose.q1);
+  out.copy(qA);
+  if (pose.dt > 0) {
+    const ahead = (pose.lookAhead[0] || 0) + pose.age + (performance.now() - poseAt);
+    qD.copy(qA).multiply(qB.invert());                              // rotation over dt
+    qI.identity().slerp(qD, THREE.MathUtils.clamp(ahead / pose.dt, 0, 4));
+    out.premultiply(qI);
+  }
+  return out;
+}
+
 function updateControls(dt) {
   if (renderer.xr.isPresenting) return;
   camera.position.set(0, S.eyeH, 0);
-  if (gyroOn && orient) {
+  if (HEAD && pose) {
+    headQuat(tmpQ);
+    if (wantRecenter) {   // facing direction now = towards the person (yaw only, keep the horizon level)
+      const e = new THREE.Euler().setFromQuaternion(tmpQ, 'YXZ');
+      headZero.setFromAxisAngle(new THREE.Vector3(0, 1, 0), -e.y);
+      wantRecenter = false;
+    }
+    camera.quaternion.copy(headZero).multiply(tmpQ);
+    rig.rotation.y = 0;
+  } else if (gyroOn && orient) {
     gyroQuat(tmpQ);
     if (!gyroZero) {   // re-centre: whatever way you face when enabling = towards the person
       const e = new THREE.Euler().setFromQuaternion(tmpQ, 'YXZ');
@@ -499,6 +553,7 @@ anaScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMater
 })));
 
 function onResize() {
+  document.body.classList.toggle('stereo', S.mode === 'sbs' || S.mode === 'hsbs');
   const w = innerWidth, h = innerHeight;
   renderer.setSize(w, h);
   // full SBS: each eye is a native (w/2) x h image. half SBS: each half is squeezed, display stretches it back to w x h.
