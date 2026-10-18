@@ -482,13 +482,20 @@ if (HEAD) {
     // whatever the driver says (it doesn't report 3D for every model, e.g. the Beast); squeezed SBS if the driver
     // says 3D on a normal-width output; otherwise flat
     const m = innerWidth / innerHeight > 2.6 ? 'sbs' : pose.sbs ? 'hsbs' : 'mono';
-    if (m !== S.mode) { S.mode = m; onResize(); syncUI(); }
+    if (!q.has('lockmode') && m !== S.mode) { S.mode = m; onResize(); syncUI(); }
     // true-scale view: the glasses' diagonal FOV, per eye
     const a = pose.res[0] / pose.res[1], tanD = Math.tan(THREE.MathUtils.degToRad(pose.fov) / 2);
     const vfov = THREE.MathUtils.radToDeg(2 * Math.atan(tanD / Math.sqrt(1 + a * a)));
     if (pose.fov > 0 && Math.abs(camera.fov - vfov) > 0.01) { camera.fov = vfov; camera.updateProjectionMatrix(); }
   };
   es.onerror = () => msg('Lost head tracking (is breezy throne still running?)');
+  // double-click (trackpad) cycles 2D -> 3D squeezed -> 3D full width, for when the guess is wrong
+  const MODES = ['mono', 'hsbs', 'sbs'], NAMES = { mono: '2D', hsbs: '3D (half SBS)', sbs: '3D (full SBS)' };
+  addEventListener('dblclick', () => {
+    S.mode = MODES[(MODES.indexOf(S.mode) + 1) % MODES.length];
+    q.set('lockmode', '1'); onResize(); syncUI();
+    msg(NAMES[S.mode]); setTimeout(() => msg(''), 2500);
+  });
 }
 function headQuat(out) {
   // the two latest orientations give the turn rate; predict ahead by the driver's look-ahead plus the data's age,
