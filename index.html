@@ -478,8 +478,10 @@ if (HEAD) {
     const [x, y, z, w] = pose.q;
     if (x === 0 && y === 0 && z === 0 && w === 1) { headZero.identity(); wantRecenter = false; }
     if (first) { msg('Head tracking on · R recenters · H settings · Ctrl+Q exits'); setTimeout(() => msg(''), 5000); }
-    // the glasses' own 3D switch decides the view mode: full SBS on a 32:9 output, squeezed on 16:9, flat in 2D
-    const m = pose.sbs ? (innerWidth / innerHeight > 2.6 ? 'sbs' : 'hsbs') : 'mono';
+    // the glasses' own 3D switch decides the view mode. A double-wide output (3840 across) only happens in 3D,
+    // whatever the driver says (it doesn't report 3D for every model, e.g. the Beast); squeezed SBS if the driver
+    // says 3D on a normal-width output; otherwise flat
+    const m = innerWidth / innerHeight > 2.6 ? 'sbs' : pose.sbs ? 'hsbs' : 'mono';
     if (m !== S.mode) { S.mode = m; onResize(); syncUI(); }
     // true-scale view: the glasses' diagonal FOV, per eye
     const a = pose.res[0] / pose.res[1], tanD = Math.tan(THREE.MathUtils.degToRad(pose.fov) / 2);
