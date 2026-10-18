@@ -79,7 +79,7 @@
   <label>Lock screen plane to person <input id="focusLock" type="checkbox"></label>
   <label>Half spacing (px) <input id="gap" type="range" min="-300" max="300" step="1"><span class="v"></span></label>
   <div class="row"><button id="gapMinus">◀ closer</button><button id="gapZero">0</button><button id="gapPlus">apart ▶</button></div>
-  <small>Half spacing pushes the left and right pictures apart (+) or together (−) in the SBS modes. Keys: [ and ].</small>
+  <small>Half spacing shifts the left and right views apart (+) or together (−) in the SBS modes, without black bars. Keys: [ and ].</small>
   <label>Swap eyes <input id="swapEyes" type="checkbox"></label>
   <label>Alignment test <input id="alignTest" type="checkbox"></label>
   <small>Alignment test: in glasses 3D mode you should see ONE green cross. Close your right eye and you should see "L". Two crosses = the glasses aren't splitting the picture the way this mode expects (try the other SBS mode). "R" with your right eye closed = tick Swap eyes.</small>
@@ -371,6 +371,7 @@ function gyroQuat(out) {
 }
 
 const clock = new THREE.Clock();
+let shiftApplied = 0;
 const fwd = new THREE.Vector3(), rightV = new THREE.Vector3(), camW = new THREE.Vector3(), tmpQ = new THREE.Quaternion();
 function updateControls(dt) {
   if (renderer.xr.isPresenting) return;
@@ -440,7 +441,17 @@ function render() {
   camera.updateMatrixWorld();
   camera.focus = S.focus;
   stereo.eyeSep = S.ipd / 1000;
+  // undo last frame's shift first: StereoCamera caches its matrices and only rebuilds them when settings change
+  if (shiftApplied) { stereo.cameraL.projectionMatrix.elements[8] -= shiftApplied; stereo.cameraR.projectionMatrix.elements[8] += shiftApplied; }
   stereo.update(camera);
+  // Half spacing = shift each eye's view sideways by gap/2 px. Done in the projection (lens shift), not by moving
+  // the viewport, so the halves stay full-width: the scene simply renders a bit further out at each edge.
+  const eyeW = innerWidth / 2;
+  shiftApplied = S.mode === 'anaglyph' ? 0 : (S.gap / 2) * 2 / eyeW;
+  for (const [c, sg] of [[stereo.cameraL, 1], [stereo.cameraR, -1]]) {
+    c.projectionMatrix.elements[8] += sg * shiftApplied;
+    c.projectionMatrixInverse.copy(c.projectionMatrix).invert();
+  }
   const [camL, camR] = S.swapEyes ? [stereo.cameraR, stereo.cameraL] : [stereo.cameraL, stereo.cameraR];
   const w = innerWidth, h = innerHeight;
   if (S.mode === 'anaglyph') {
@@ -450,10 +461,8 @@ function render() {
     return;
   }
   renderer.setScissorTest(true);
-  // each eye's picture is shifted outward by gap/2 inside its own half (scissor keeps it there, the rest is cleared black)
-  const g = S.gap / 2;
-  renderer.setScissor(0, 0, w / 2, h); renderer.setViewport(-g, 0, w / 2, h); renderer.render(scene, camL);
-  renderer.setScissor(w / 2, 0, w / 2, h); renderer.setViewport(w / 2 + g, 0, w / 2, h); renderer.render(scene, camR);
+  renderer.setScissor(0, 0, w / 2, h); renderer.setViewport(0, 0, w / 2, h); renderer.render(scene, camL);
+  renderer.setScissor(w / 2, 0, w / 2, h); renderer.setViewport(w / 2, 0, w / 2, h); renderer.render(scene, camR);
   renderer.setScissorTest(false); renderer.setViewport(0, 0, w, h);
 }
 
