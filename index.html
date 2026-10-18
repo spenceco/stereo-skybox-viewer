@@ -432,7 +432,7 @@ renderer.domElement.addEventListener('pointermove', e => {
 renderer.domElement.addEventListener('pointerup', () => drag = null);
 renderer.domElement.addEventListener('wheel', e => { S.dist = THREE.MathUtils.clamp(S.dist + e.deltaY * 0.002, 0.8, 10); applyPerson(); syncUI(); save(); });
 addEventListener('keydown', e => { keys[e.code] = true; if (e.code === 'KeyH') ui.classList.toggle('hidden');
-  if (e.code === 'KeyR') wantRecenter = true;
+  if (e.code === 'KeyR' || e.code === 'Space' || e.code === 'Enter') wantRecenter = true;
   if (e.code === 'BracketLeft') nudgeGap(-2); if (e.code === 'BracketRight') nudgeGap(2); });
 addEventListener('keyup', e => keys[e.code] = false);
 
@@ -477,7 +477,7 @@ if (HEAD) {
     // the driver recentered (glasses double-tap): it sends exactly identity, and from then on "ahead" is where you face
     const [x, y, z, w] = pose.q;
     if (x === 0 && y === 0 && z === 0 && w === 1) { headZero.identity(); wantRecenter = false; }
-    if (first) { msg('Head tracking on · R recenters · H settings · Ctrl+Q exits'); setTimeout(() => msg(''), 5000); }
+    if (first) { msg('Head tracking on · R / Space recenters · H settings · Ctrl+Q exits'); setTimeout(() => msg(''), 5000); }
     // the glasses' own 3D switch decides the view mode. A double-wide output (3840 across) only happens in 3D,
     // whatever the driver says (it doesn't report 3D for every model, e.g. the Beast); squeezed SBS if the driver
     // says 3D on a normal-width output; otherwise flat
